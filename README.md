@@ -22,7 +22,8 @@ Open **Data sources** (top right) to paste keys. They are stored only in your br
 
 | Key | What it turns on | Without it |
 | --- | --- | --- |
-| Google Maps API key | Google place search, real road times, and real train and bus departures from Google's transit data, including which station to use | OpenStreetMap search and road distances; train and bus timings are estimates |
+| Google Maps API key | Google place search, real road times, cab times adjusted for traffic at that hour, and transit departures where Google has them (not Indian Railways) | OpenStreetMap search and road distances |
+| irctc.dev key | The actual trains between the nearby stations at each end, with departure and arrival times | One estimated train time |
 | SerpApi key | Real flights, timings and fares (Google Flights results) | Estimated flight time and fare, with a Google Flights link |
 
 ### Google Maps key
@@ -34,6 +35,14 @@ Open **Data sources** (top right) to paste keys. They are stored only in your br
    only the two APIs above.
 4. Paste it into Data sources.
 
+### Rail timetable key
+
+1. Sign in at irctc.dev with a Google account (an independent service, not IRCTC itself) and create an API key in its dashboard.
+2. Either paste it into Data sources, or set it as the `IRCTC_API_KEY` environment variable on Vercel.
+
+The app searches up to three stations near each end and keeps, for each train, the station pairing that
+gets you to the door soonest. One trip search uses roughly 6 to 12 lookups; results are cached for the session.
+
 ### Flight key
 
 1. Create a SerpApi account and copy your private API key.
@@ -44,7 +53,8 @@ Each flight search uses one SerpApi search; results are cached for the browser s
 
 ## Notes
 
-- Train fares are estimates even with Google connected; Google's transit data does not include Indian Railways fares.
+- Train fares are the rail service's estimate for the cheapest class, up to an estimated 3A fare.
+- Stations come from a built-in list of about 170 major stations, so very small halts are not considered.
 - Times are shown in your device's time zone. On international flights, the times inside each flight step are local airport times.
 - Booking buttons open Google Flights, IRCTC, redBus and Google Maps.
 
@@ -54,4 +64,4 @@ Each flight search uses one SerpApi search; results are cached for the browser s
 - `app.js` – place search, routing, transit and flight lookups, trip planning and rendering
 - `data.js` – Indian railway stations and popular places (used when Google is not connected)
 - `airports.js` – world airports (OurAirports, public domain)
-- `api/flights.js`, `server.js` – flight-search proxy and a minimal local server
+- `api/flights.js`, `api/trains.js`, `server.js` – flight and rail proxies and a minimal local server

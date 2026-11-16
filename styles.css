@@ -306,3 +306,5 @@ dialog .help b { color: var(--ink-2); font-weight: 600; }
 .test-out li.bad::before { content: "✕"; color: var(--warn); }
 .test-out li.bad { color: var(--warn); }
 .dialog-actions .test { margin-right: auto; }
+.dep.miss { opacity: .5; }
+.dep.miss.on { opacity: 1; }

@@ -9,7 +9,7 @@
   const OSRM = "https://router.project-osrm.org";
   const STORE = "wayline:last", KEYS = "wayline:keys";
 
-  let keys = { google: "", flights: "" };
+  let keys = { google: "", flights: "", rail: "" };
   try { Object.assign(keys, JSON.parse(localStorage.getItem(KEYS)) || {}); } catch { /* none saved */ }
   const problems = new Set(); // messages about live sources that failed, shown with results
 
@@ -362,6 +362,86 @@
     return list;
   }
 
+  /* ---------- Indian Railways timetable (irctc.dev, via /api/trains or directly) ---------- */
+
+  let railOff = false; // set when no rail source is reachable, to avoid repeating failed calls
+  const titleCase = (t) => String(t).toLowerCase().replace(/\b[a-z]/g, (c) => c.toUpperCase()).replace(/\bExp\b/, "Express").replace(/\bSf\b/, "SF");
+
+  // Trains between two station codes on a date. Returns null if no rail source is available.
+  async function railTrains(from, to, date) {
+    if (railOff) return null;
+    const ck = `wayline:rl:${from}:${to}:${date}`;
+    try { const c = JSON.parse(sessionStorage.getItem(ck)); if (c) return c; } catch { /* no cache */ }
+    let data = null, err = null;
+    try {
+      data = await getJSON(`api/trains?from=${from}&to=${to}&date=${date}`, { headers: keys.rail ? { "x-rail-key": keys.rail } : {} }, 20000);
+    } catch (e) { if (e.status && ![404, 405, 501].includes(e.status)) err = e; }
+    if (!data && !err && keys.rail) {
+      try {
+        data = await getJSON(`https://api.irctc.dev/api/v1/trains/search?from=${from}&to=${to}&date=${date}`, { headers: { "x-api-key": keys.rail } }, 20000);
+      } catch (e) { err = e; }
+    }
+    if (!data) {
+      railOff = true;
+      if (err || keys.rail) problems.add(`Train timetable lookup failed (${err ? err.message : "not reachable"}). Showing estimated trains — check the rail key in Data sources.`);
+      return null;
+    }
+    const list = (Array.isArray(data) ? data : data.data || []).filter((t) => t && t.departure && t.durationMin);
+    try { sessionStorage.setItem(ck, JSON.stringify(list)); } catch { /* full */ }
+    return list;
+  }
+
+  // Search every candidate station pair on every relevant date.
+  async function railSearchAll(oStns, dStns, dates) {
+    const jobs = [];
+    for (const date of dates) for (const o of oStns) for (const d of dStns) if (o.code !== d.code) jobs.push({ o, d, date });
+    if (!jobs.length) return null;
+    const first = await railTrains(jobs[0].o.code, jobs[0].d.code, jobs[0].date);
+    if (first === null) return null;
+    const rest = await Promise.all(jobs.slice(1).map((j) => railTrains(j.o.code, j.d.code, j.date)));
+    return jobs.map((j, i) => ({ ...j, trains: (i ? rest[i - 1] : first) || [] }));
+  }
+
+  // Stations worth searching: the nearest one, plus up to two more that are not much farther away.
+  function nearbyStations(list, p) {
+    const d0 = hav(p, list[0]);
+    return list.filter((s) => hav(p, s) <= d0 + 25);
+  }
+
+  /* ---------- traffic-aware cab times (Google Routes) ---------- */
+
+  const trafficCache = new Map();
+  async function trafficMin(a, b, at) {
+    if (!google.on() || at < addMin(new Date(), 5)) return null;
+    const k = `${pkey(a)}>${pkey(b)}@${Math.round(at / 9e5)}`; // 15-minute buckets
+    if (!trafficCache.has(k)) {
+      trafficCache.set(k, google.call("https://routes.googleapis.com/directions/v2:computeRoutes",
+        { origin: wp(a), destination: wp(b), travelMode: "DRIVE", routingPreference: "TRAFFIC_AWARE", departureTime: at.toISOString() },
+        "routes.duration").then((d) => Math.ceil(secs(d.routes?.[0]?.duration) / 60) || null).catch(() => null));
+    }
+    return trafficCache.get(k);
+  }
+
+  // Re-time the cab hops of one departure using predicted traffic at the hour they happen.
+  async function refine(v) {
+    if (v.refined || !v.anchor) return;
+    v.refined = true;
+    const first = v.legs[0], lastLeg = v.legs[v.legs.length - 1];
+    if (first.road) {
+      const at = addMin(v.anchor, -(v.preBuf + first.mins));
+      const m = await trafficMin(first.road.a, first.road.b, at);
+      if (m) { first.mins = m; first.detail += ` · with traffic at ${clock(at)}`; }
+    }
+    v.start = addMin(v.anchor, -(v.preBuf + first.mins));
+    if (lastLeg.road && lastLeg !== first) {
+      const at = addMin(v.start, sumMins(v.legs.slice(0, -1)));
+      const m = await trafficMin(lastLeg.road.a, lastLeg.road.b, at);
+      if (m) { lastLeg.mins = m; lastLeg.detail += ` · with traffic at ${clock(at)}`; }
+    }
+    v.total = sumMins(v.legs);
+    v.end = addMin(v.start, v.total);
+  }
+
   /* ---------- planning ---------- */
 
   function nearestN(list, p, n, penalty = () => 0) {
@@ -386,6 +466,7 @@
       detail: `${km(seg.km)} · about ${inr(mine.cost)}`,
       alt: `${pref === "bus" ? "By cab" : "By local bus"}: ${dur(other.mins)} · about ${inr(other.cost)}`,
       url: mapsUrl(a, b, pref === "bus" ? "transit" : "driving"),
+      road: pref === "bus" ? null : { a, b }, // cab hops can be re-timed with traffic
     };
   }
 
@@ -447,9 +528,13 @@
     const flyable = oAir.code !== dAir.code && air >= 150;
     const oStns = india ? nearestN(STATIONS, from, 3) : [], dStns = india ? nearestN(STATIONS, to, 3) : [];
 
+    const oNear = india ? nearbyStations(oStns, from) : [], dNear = india ? nearbyStations(dStns, to) : [];
+    const day = (n) => isoDate(addMin(at("12:00"), n * 1440));
+    const railDates = prefs.timing === "arrive" ? [day(-1), day(0)] : prefs.timing === "leave" && prefs.time >= "18:00" ? [day(0), day(1)] : [day(0)];
     const pairs = [[from, to], [from, oAir], [dAir, to], ...oStns.map((s) => [from, s]), ...dStns.map((s) => [s, to])];
     const quiet = (p, what) => p.catch((e) => { google.failed(what, e); return null; });
-    const [road, trains, busRoutes, flights] = await Promise.all([
+    const [rail, road, trains, busRoutes, flights] = await Promise.all([
+      india ? railSearchAll(oNear, dNear, railDates) : null,
       roadPairs(pairs),
       google.on() ? quiet(trainSpans(from, to, T, prefs), "train search") : null,
       google.on() && hav(from, to) < 1200
@@ -492,8 +577,65 @@
     }
     if (hubPairs.length) hubRoad = await roadPairs(hubPairs);
 
-    /* Train — real departures from Google */
-    if (spans.length) {
+    /* Train — real timetable from the rail service */
+    let railOpt = null;
+    if (rail) {
+      const byTrain = new Map();
+      for (const { o, d, date, trains: list } of rail) for (const r of list) {
+        const dep = new Date(`${date}T${r.departure}:00`);
+        if (isNaN(dep)) continue;
+        const arr = addMin(dep, r.durationMin);
+        const a = transfer(road.get(from, o), prefs.local, from, o, `to ${o.name} station`);
+        const b = transfer(road.get(d, to), prefs.local, d, to, `to ${to.name}`);
+        const name = titleCase(r.trainName || "Train");
+        const legs = [
+          a,
+          { type: "wait", title: "Find your platform and board", mins: 15 },
+          {
+            type: "main", title: `${name} · ${r.trainNo}`, mins: r.durationMin,
+            detail: `${o.name} ${clock(dep)} → ${d.name} ${clock(arr)}${r.halts != null ? ` · ${r.halts} halts` : ""}`,
+            alt: [r.trainType && titleCase(String(r.trainType).replace(/_/g, " ")), r.distance && `${r.distance} km`].filter(Boolean).join(" · "),
+          },
+          { type: "wait", title: "Exit the station", mins: 10 },
+          b,
+        ];
+        const start = addMin(dep, -(a.mins + 15)), total = sumMins(legs);
+        const fare = typeof r.estimatedFare === "number" ? r.estimatedFare : null;
+        const railKm = +r.distance || hav(o, d) * 1.25;
+        const v = {
+          start, end: addMin(start, total), total, legs, anchor: dep, preBuf: 15,
+          costLo: (fare ?? round10(60 + 0.55 * railKm)) + sumCost(legs), costHi: round10(150 + 1.5 * railKm) + sumCost(legs),
+          sub: `${o.name} (${o.code}) → ${d.name} (${d.code})`,
+          row: { dep, arr, name: `${name} ${r.trainNo}`, note: `${o.name} → ${d.name}`, price: fare },
+        };
+        const k = `${r.trainNo}|${isoDate(dep)}`, old = byTrain.get(k);
+        // The same train may serve several nearby stations: keep the pairing that gets you there soonest.
+        if (!old || v.end < old.end || (+v.end === +old.end && v.total < old.total)) byTrain.set(k, v);
+      }
+      let variants = [...byTrain.values()];
+      // Keep the departures that matter for the chosen timing.
+      if (prefs.timing === "arrive") {
+        const fit = variants.filter((v) => v.end <= T.deadline && v.end >= addMin(T.deadline, -600));
+        variants = fit.length ? fit : variants.sort((x, y) => Math.abs(x.end - T.deadline) - Math.abs(y.end - T.deadline)).slice(0, 4);
+      } else if (prefs.timing === "leave") {
+        const fit = variants.filter((v) => v.start >= T.leave).sort((x, y) => x.end - y.end).slice(0, 14);
+        variants = fit.length ? fit : variants.sort((x, y) => y.start - x.start).slice(0, 4);
+      } else variants = variants.filter((v) => isoDate(v.row.dep) === prefs.date);
+      if (variants.length) {
+        railOpt = {
+          mode: "train", title: "Train", variants, live: "Indian Railways timetable", listTitle: "Trains",
+          costNote: "from est. fare – 3A, incl. local transfers",
+          links: [
+            { label: "Book on IRCTC", url: "https://www.irctc.co.in/nget/train-search", primary: true },
+            { label: "See all trains", url: `https://www.google.com/search?q=${encodeURIComponent(`trains from ${oNear[0].name} to ${dNear[0].name}`)}` },
+          ],
+        };
+      }
+    }
+
+    /* Train — otherwise, departures from Google transit (mostly outside India) */
+    if (railOpt) options.push(railOpt);
+    else if (spans.length) {
       const variants = spans.map((sp) => {
         const a = transitHop(sp.pre, sp.board.from.lat != null ? hubRoad.get(from, sp.board.from) : null, prefs.local, from, sp.board.from, `to ${sp.board.from.name}`);
         const b = transitHop(sp.post, sp.alight.to.lat != null ? hubRoad.get(sp.alight.to, to) : null, prefs.local, sp.alight.to, to, `to ${to.name}`);
@@ -502,7 +644,7 @@
         const names = sp.rides.filter((r) => r.t).map((r) => [r.t.name, r.t.number].filter(Boolean).join(" "));
         const fare = india ? [round10(60 + 0.55 * sp.km), round10(150 + 1.5 * sp.km)] : [null, null];
         return {
-          start, end: addMin(start, total), total, legs,
+          start, end: addMin(start, total), total, legs, anchor: sp.board.dep, preBuf: 15,
           costLo: fare[0] == null ? null : fare[0] + sumCost(legs), costHi: fare[1] == null ? null : fare[1] + sumCost(legs),
           sub: `${sp.board.from.name} → ${sp.alight.to.name}`,
           row: { dep: sp.board.dep, arr: sp.alight.arr, name: names.join(" → "), note: `${sp.board.from.name} → ${sp.alight.to.name}${names.length > 1 ? ` · ${names.length - 1} change` : ""}` },
@@ -624,7 +766,7 @@
       if (flights && flights.length) {
         const variants = flights.map((f) => {
           const dep = new Date(f.flights[0].departure_airport.time.replace(" ", "T"));
-          const legs = [a, checkin];
+          const legs = [{ ...a }, checkin];
           f.flights.forEach((s, i) => {
             if (i) legs.push({ type: "wait", title: `Layover at ${s.departure_airport.id}`, mins: f.layovers?.[i - 1]?.duration || 60, detail: s.departure_airport.name });
             legs.push({
@@ -633,13 +775,13 @@
               alt: [s.airplane, s.travel_class].filter(Boolean).join(" · "),
             });
           });
-          legs.push(exit, b);
+          legs.push(exit, { ...b });
           const start = addMin(dep, -(a.mins + prefs.airbuf)), total = sumMins(legs);
           const air0 = sumMins(legs.slice(2, -2));
           const stops = f.flights.length - 1;
           const price = typeof f.price === "number" ? f.price + a.cost + b.cost : null;
           return {
-            start, end: addMin(start, total), total, legs, costLo: price, costHi: price,
+            start, end: addMin(start, total), total, legs, costLo: price, costHi: price, anchor: dep, preBuf: prefs.airbuf,
             sub: `${oAir.code} → ${dAir.code} · ${stops ? `${stops} stop${stops > 1 ? "s" : ""}` : "non-stop"}`,
             row: {
               dep, arr: addMin(dep, air0), price: f.price,
@@ -687,13 +829,19 @@
       if (o.variants) {
         o.variants.sort((x, y) => x.row.dep - y.row.dep);
         choose(o, prefs, T);
+        // Re-time cab hops with predicted traffic for the departures most likely to be picked, then choose again.
+        const rank = prefs.timing === "arrive" ? (x, y) => Math.abs(x.end - T.deadline) - Math.abs(y.end - T.deadline)
+          : prefs.timing === "leave" ? (x, y) => Math.abs(x.start - T.leave) - Math.abs(y.start - T.leave) : (x, y) => x.total - y.total;
+        const top = [...new Set([o.variants[o.pick], ...[...o.variants].sort(rank).slice(0, 4)])];
+        await Promise.all(top.map(refine));
+        choose(o, prefs, T);
       } else {
         o.total = sumMins(o.legs);
         schedule(o, prefs, at);
       }
       settle(o);
     }
-    return { options, skipped, road: road.source, door, abroad };
+    return { options, skipped, road: road.source, door, abroad, T };
   }
 
   // Options with real departures: pick the one that best fits the timing preference.
@@ -777,13 +925,16 @@
     const bar = o.legs.map((l) => `<i class="${l.type} ${o.mode}" style="flex:${Math.max(l.mins, 1)}" title="${esc(l.title)} · ${dur(l.mins)}"></i>`).join("");
     const startLabel = prefs.timing === "arrive" ? "Leave by" : "Leave";
     const isOpen = open.has(o.mode);
+    const T = last.res.T, target = new Date(`${prefs.date}T${prefs.time}:00`);
+    const misses = (v) => (prefs.timing === "arrive" ? v.end > T.deadline : prefs.timing === "leave" ? v.start < T.leave : false);
+    const early = prefs.timing === "arrive" && o.variants && o.end <= target ? `${dur(minsBetween(o.end, target))} before ${clock(target)}` : "";
     const chooser = o.variants ? `
       <div class="chooser">
         <h3>${o.listTitle} on this route <small>${o.variants.length} found · tap one to plan around it</small></h3>
         <ul>${o.variants.map((v, i) => `
-          <li><button type="button" class="dep ${i === o.pick ? "on" : ""}" data-mode="${o.mode}" data-i="${i}">
+          <li><button type="button" class="dep ${i === o.pick ? "on" : ""} ${misses(v) ? "miss" : ""}" data-mode="${o.mode}" data-i="${i}">
             <span class="dep-time"><b>${timeHTML(v.row.dep, prefs.date)}</b><i></i><b>${timeHTML(v.row.arr, prefs.date)}</b></span>
-            <span class="dep-name"><b>${esc(v.row.name)}</b><small>${esc(v.row.note)}</small></span>
+            <span class="dep-name"><b>${esc(v.row.name)}</b><small>${esc(v.row.note)} · at your destination ${clock(v.end)}${misses(v) ? (prefs.timing === "arrive" ? " — too late" : " — too early") : ""}</small></span>
             <span class="dep-dur">${dur(minsBetween(v.row.dep, v.row.arr))}</span>
             <span class="dep-price">${v.row.price != null ? inr(v.row.price) : ""}</span>
           </button></li>`).join("")}
@@ -793,6 +944,7 @@
       ...badges.map((b) => `<em class="tag good">${b}</em>`),
       o.live ? `<em class="tag live">${esc(o.live)}</em>` : o.mode !== "car" ? `<em class="tag">Estimated timings</em>` : "",
       o.suggested ? `<em class="tag">${o.suggested}</em>` : "",
+      early ? `<em class="tag">There ${early}</em>` : "",
       o.variants && !o.fits ? `<em class="tag warn">Nothing fits your time — closest shown</em>` : "",
       o.late ? `<em class="tag warn">Leave time has already passed</em>` : "",
     ].join("");
@@ -865,14 +1017,17 @@
       </div>${foot}`;
   }
 
-  $("results").addEventListener("click", (e) => {
+  $("results").addEventListener("click", async (e) => {
     const dep = e.target.closest(".dep");
     if (dep) {
       const o = last.res.options.find((x) => x.mode === dep.dataset.mode);
       o.pick = +dep.dataset.i;
       o.fits = true;
       settle(o);
-      return render();
+      render();
+      const v = o.variants[o.pick];
+      if (!v.refined) { await refine(v); if (o.variants[o.pick] === v) { settle(o); render(); } }
+      return;
     }
     const btn = e.target.closest(".summary");
     if (!btn) return;
@@ -984,19 +1139,22 @@
 
   const dlg = $("settings");
   function syncStatus() {
-    $("open-settings").classList.toggle("connected", !!(keys.google || keys.flights));
+    $("open-settings").classList.toggle("connected", !!(keys.google || keys.flights || keys.rail));
     $("status-google").textContent = keys.google ? "Connected" : "Not connected";
     $("status-flights").textContent = keys.flights ? "Key saved" : "No key";
+    $("status-rail").textContent = keys.rail ? "Key saved" : "No key";
   }
   $("open-settings").addEventListener("click", () => {
     $("key-google").value = keys.google;
     $("key-flights").value = keys.flights;
+    $("key-rail").value = keys.rail;
+    $("test-out").hidden = true;
     dlg.showModal();
   });
   $("settings-form").addEventListener("submit", () => {
-    keys = { google: $("key-google").value.trim(), flights: $("key-flights").value.trim() };
+    keys = { google: $("key-google").value.trim(), flights: $("key-flights").value.trim(), rail: $("key-rail").value.trim() };
     try { localStorage.setItem(KEYS, JSON.stringify(keys)); } catch { /* private mode */ }
-    selected.from = selected.from && selected.from.lat != null ? selected.from : null;
+    railOff = false;
     syncStatus();
   });
   $("settings-cancel").addEventListener("click", () => dlg.close());
@@ -1012,7 +1170,7 @@
   $("settings-test").addEventListener("click", async () => {
     const out = $("test-out"), btn = $("settings-test");
     const saved = keys;
-    keys = { google: $("key-google").value.trim(), flights: $("key-flights").value.trim() };
+    keys = { google: $("key-google").value.trim(), flights: $("key-flights").value.trim(), rail: $("key-rail").value.trim() };
     const lines = [];
     const show = () => {
       out.hidden = false;
@@ -1038,6 +1196,17 @@
       if (e.status === 400) lines.push([true, "Flight search is ready. Your first real search will confirm the key."]);
       else if (e.status === 501) lines.push([null, "Flights: no SerpApi key yet — flights will be estimates."]);
       else lines.push([false, "Flights: this address can't run the flight helper, so flights will be estimates. Open the app from Vercel or with “node server.js”."]);
+    }
+    // The train check runs one real lookup (Thiruvananthapuram → Aluva), which uses one credit.
+    if (!keys.rail) lines.push([null, "Trains: no rail key yet — train timings will be estimates."]);
+    else {
+      railOff = false;
+      const before = problems.size;
+      const found = await railTrains("TVC", "AWY", isoDate(addMin(new Date(), 1440)));
+      if (found && found.length) lines.push([true, `Train timetable works (${found.length} trains found Thiruvananthapuram → Aluva).`]);
+      else if (found) lines.push([null, "Train timetable answered but returned no trains for the test route."]);
+      else lines.push([false, [...problems].slice(before).join(" ") || "Train timetable could not be reached."]);
+      railOff = false;
     }
     keys = saved;
     btn.disabled = false;

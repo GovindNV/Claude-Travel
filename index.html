@@ -125,7 +125,11 @@
 
       <label for="key-google">Google Maps API key <small id="status-google"></small></label>
       <input id="key-google" type="password" autocomplete="off" spellcheck="false" placeholder="AIza…">
-      <p class="help">Gives Google place search, real road times, and real train and bus departures. In Google Cloud, enable <b>Places API (New)</b> and <b>Routes API</b>, then restrict the key to this site's address.</p>
+      <p class="help">Gives Google place search, real road times and cab times with traffic. In Google Cloud, enable <b>Places API (New)</b> and <b>Routes API</b>, then restrict the key to this site's address.</p>
+
+      <label for="key-rail">Indian rail timetable key (irctc.dev) <small id="status-rail"></small></label>
+      <input id="key-rail" type="password" autocomplete="off" spellcheck="false" placeholder="Your irctc.dev API key">
+      <p class="help">Gives the actual trains between stations with departure and arrival times. irctc.dev is an independent service, not IRCTC itself.</p>
 
       <label for="key-flights">SerpApi key (Google Flights) <small id="status-flights"></small></label>
       <input id="key-flights" type="password" autocomplete="off" spellcheck="false" placeholder="Your SerpApi private key">
