@@ -613,13 +613,17 @@
         if (!old || v.end < old.end || (+v.end === +old.end && v.total < old.total)) byTrain.set(k, v);
       }
       let variants = [...byTrain.values()];
-      // Keep the departures that matter for the chosen timing.
+      // Keep only the trains within two hours of the chosen time: those that get you to the door in the
+      // two hours up to an "arrive by" time, or that have you setting off in the two hours after a "leave at" time.
+      const WINDOW = 120;
       if (prefs.timing === "arrive") {
-        const fit = variants.filter((v) => v.end <= T.deadline && v.end >= addMin(T.deadline, -600));
-        variants = fit.length ? fit : variants.sort((x, y) => Math.abs(x.end - T.deadline) - Math.abs(y.end - T.deadline)).slice(0, 4);
+        const want = at(prefs.time);
+        const fit = variants.filter((v) => v.end <= want && v.end >= addMin(want, -WINDOW));
+        variants = fit.length ? fit : variants.sort((x, y) => Math.abs(x.end - T.deadline) - Math.abs(y.end - T.deadline)).slice(0, 3);
       } else if (prefs.timing === "leave") {
-        const fit = variants.filter((v) => v.start >= T.leave).sort((x, y) => x.end - y.end).slice(0, 14);
-        variants = fit.length ? fit : variants.sort((x, y) => y.start - x.start).slice(0, 4);
+        const fit = variants.filter((v) => v.start >= T.leave && v.start <= addMin(T.leave, WINDOW));
+        variants = fit.length ? fit : variants.filter((v) => v.start >= T.leave).sort((x, y) => x.start - y.start).slice(0, 3);
+        if (!variants.length) variants = [...byTrain.values()].sort((x, y) => y.start - x.start).slice(0, 3);
       } else variants = variants.filter((v) => isoDate(v.row.dep) === prefs.date);
       if (variants.length) {
         railOpt = {
