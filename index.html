@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Wayline — every way to get there</title>
-  <meta name="description" content="Compare flight, train, bus and car for any trip in India, door to door, with arrival times.">
+  <meta name="description" content="Compare flight, train, bus and car for any trip, door to door, with arrival times.">
   <meta name="theme-color" content="#f6f5f1" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#101113" media="(prefers-color-scheme: dark)">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2314151a'/%3E%3Cpath d='M8 21c4-9 12-1 16-10' stroke='%23fff' stroke-width='2.4' fill='none' stroke-linecap='round'/%3E%3Ccircle cx='8' cy='21' r='2.2' fill='%23fff'/%3E%3Ccircle cx='24' cy='11' r='2.2' fill='%23fff'/%3E%3C/svg%3E">
@@ -19,7 +19,9 @@
       <svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true"><path d="M5 23c5-12 17-2 22-14" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="round"/><circle cx="5" cy="23" r="2.6" fill="currentColor"/><circle cx="27" cy="9" r="2.6" fill="currentColor"/></svg>
       <span>Wayline</span>
     </a>
-    <span class="top-note">Door-to-door trip planner · India</span>
+    <button type="button" class="settings-btn" id="open-settings" aria-haspopup="dialog">
+      <i aria-hidden="true"></i>Data sources
+    </button>
   </header>
 
   <main>
@@ -81,6 +83,11 @@
         </div>
 
         <div class="field">
+          <span class="label">International</span>
+          <label class="switch"><input type="checkbox" id="intl"><i aria-hidden="true"></i><span>Outside India</span></label>
+        </div>
+
+        <div class="field">
           <label for="local">Local transfers</label>
           <select id="local">
             <option value="cab">Cab / auto</option>
@@ -94,6 +101,7 @@
             <option value="60">1 hour</option>
             <option value="90" selected>1½ hours</option>
             <option value="120">2 hours</option>
+            <option value="180">3 hours</option>
           </select>
         </div>
 
@@ -106,10 +114,31 @@
   </main>
 
   <footer>
-    <p>Road distances come from OpenStreetMap routing. Flight, train and bus timings and fares are estimates, not live schedules — confirm on the booking site before you pay.</p>
-    <p class="muted">Place search © OpenStreetMap contributors, via Photon. Routing by OSRM.</p>
+    <p>With Google Maps and a flight key connected, train, bus and flight departures are real. Without them, timings and fares are estimates. Either way, confirm on the booking site before you pay.</p>
+    <p class="muted">Free map data © OpenStreetMap contributors (Photon, OSRM). Airport data from OurAirports.</p>
   </footer>
 
+  <dialog id="settings" aria-labelledby="settings-title">
+    <form method="dialog" id="settings-form">
+      <h2 id="settings-title">Data sources</h2>
+      <p class="lead">Keys are saved only in this browser. Leave a field empty to use free estimates.</p>
+
+      <label for="key-google">Google Maps API key <small id="status-google"></small></label>
+      <input id="key-google" type="password" autocomplete="off" spellcheck="false" placeholder="AIza…">
+      <p class="help">Gives Google place search, real road times, and real train and bus departures. In Google Cloud, enable <b>Places API (New)</b> and <b>Routes API</b>, then restrict the key to this site's address.</p>
+
+      <label for="key-flights">SerpApi key (Google Flights) <small id="status-flights"></small></label>
+      <input id="key-flights" type="password" autocomplete="off" spellcheck="false" placeholder="Your SerpApi private key">
+      <p class="help">Gives real flights, timings and fares. Needs the app to be run with its small server or on Vercel — see the README.</p>
+
+      <div class="dialog-actions">
+        <button type="button" class="btn" id="settings-cancel">Cancel</button>
+        <button type="submit" class="btn primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="airports.js"></script>
   <script src="data.js"></script>
   <script src="app.js"></script>
 </body>
