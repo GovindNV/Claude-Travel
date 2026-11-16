@@ -131,7 +131,10 @@
       <input id="key-flights" type="password" autocomplete="off" spellcheck="false" placeholder="Your SerpApi private key">
       <p class="help">Gives real flights, timings and fares. Needs the app to be run with its small server or on Vercel — see the README.</p>
 
+      <ul class="test-out" id="test-out" aria-live="polite" hidden></ul>
+
       <div class="dialog-actions">
+        <button type="button" class="btn test" id="settings-test">Test keys</button>
         <button type="button" class="btn" id="settings-cancel">Cancel</button>
         <button type="submit" class="btn primary">Save</button>
       </div>

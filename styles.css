@@ -299,3 +299,10 @@ dialog .help b { color: var(--ink-2); font-weight: 600; }
   .dep-price { grid-column: 2; grid-row: 1; }
   .legend span { margin-left: 0; flex-basis: 100%; }
 }
+.test-out { list-style: none; margin: 0 0 16px; padding: 12px 14px; border-radius: 12px; background: var(--soft); font-size: 13px; color: var(--ink-2); display: grid; gap: 6px; }
+.test-out li { padding-left: 18px; position: relative; }
+.test-out li::before { content: "•"; position: absolute; left: 2px; color: var(--ink-3); }
+.test-out li.ok::before { content: "✓"; color: var(--good); }
+.test-out li.bad::before { content: "✕"; color: var(--warn); }
+.test-out li.bad { color: var(--warn); }
+.dialog-actions .test { margin-right: auto; }

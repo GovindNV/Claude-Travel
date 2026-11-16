@@ -1001,6 +1001,49 @@
   });
   $("settings-cancel").addEventListener("click", () => dlg.close());
 
+  // Check the keys as typed and explain, in plain words, what is wrong if a check fails.
+  function googleHint(msg) {
+    if (/not valid|invalid/i.test(msg)) return "The key itself is wrong. Copy it again from Google Cloud → Credentials.";
+    if (/referer|referrer/i.test(msg)) return `The key's website restriction doesn't include this address. Add ${location.origin}/* under the key's Website restrictions.`;
+    if (/not been used|disabled|not enabled|blocked|not authorized/i.test(msg)) return "This API isn't switched on for your project, or the key's API restrictions don't allow it.";
+    if (/billing/i.test(msg)) return "Billing isn't set up on the Google Cloud project yet.";
+    return msg;
+  }
+  $("settings-test").addEventListener("click", async () => {
+    const out = $("test-out"), btn = $("settings-test");
+    const saved = keys;
+    keys = { google: $("key-google").value.trim(), flights: $("key-flights").value.trim() };
+    const lines = [];
+    const show = () => {
+      out.hidden = false;
+      out.innerHTML = lines.map(([ok, text]) => `<li class="${ok === true ? "ok" : ok === false ? "bad" : ""}">${esc(text)}</li>`).join("");
+    };
+    btn.disabled = true;
+    lines.push([null, "Checking…"]); show(); lines.pop();
+    if (!keys.google) lines.push([null, "Google Maps: no key entered — the app will use free map data."]);
+    else {
+      try { await googleSuggest("Kochi", false); lines.push([true, "Google place search (Places API (New)) works."]); }
+      catch (e) { lines.push([false, `Google place search: ${googleHint(e.message)}`]); }
+      try {
+        const p = { lat: 9.969, lon: 76.292 }, q = { lat: 10.108, lon: 76.357 };
+        await google.call("https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix",
+          { origins: [{ waypoint: wp(p) }], destinations: [{ waypoint: wp(q) }], travelMode: "DRIVE" }, "duration,condition");
+        lines.push([true, "Google routes and transit (Routes API) works."]);
+      } catch (e) { lines.push([false, `Google routes: ${googleHint(e.message)}`]); }
+    }
+    // The flight check only looks for the helper that talks to SerpApi; it does not use up a search.
+    try {
+      await getJSON("api/flights", { headers: keys.flights ? { "x-serpapi-key": keys.flights } : {} }, 8000);
+    } catch (e) {
+      if (e.status === 400) lines.push([true, "Flight search is ready. Your first real search will confirm the key."]);
+      else if (e.status === 501) lines.push([null, "Flights: no SerpApi key yet — flights will be estimates."]);
+      else lines.push([false, "Flights: this address can't run the flight helper, so flights will be estimates. Open the app from Vercel or with “node server.js”."]);
+    }
+    keys = saved;
+    btn.disabled = false;
+    show();
+  });
+
   /* ---------- init ---------- */
 
   setupAutocomplete("from");
